@@ -79,6 +79,14 @@ Headless/SSH fallback:
 browser-harness auth login --device-code
 ```
 
+If you already have a Browser Use API key, store it safely through stdin:
+
+```bash
+browser-harness auth login --api-key-stdin
+```
+
+Do not pass API keys as command-line arguments; they can leak through shell history and process listings.
+
 Other auth commands:
 
 ```bash

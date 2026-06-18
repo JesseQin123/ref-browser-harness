@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import argparse
 import base64
+import getpass
 import hashlib
 import json
 import os
@@ -377,6 +378,17 @@ def device_login(*, open_url=True, json_output=False) -> AuthRecord:
     return record
 
 
+def api_key_stdin_login(*, json_output=False, input_stream=None) -> AuthRecord:
+    key = _read_manual_api_key(input_stream)
+    record = AuthRecord(api_key=key, source="manual")
+    save_auth_record(record)
+    if json_output:
+        print(json.dumps(_stored_output(record)), flush=True)
+    else:
+        print("Browser Use Cloud API key stored.")
+    return record
+
+
 def _exchange_authorization_code(code: str, redirect_uri: str, verifier: str) -> dict:
     return _post_json(f"{auth_base()}/cloud/cli-auth/token", {
         "grant_type": "authorization_code",
@@ -439,6 +451,20 @@ def _post_json(url: str, payload: dict) -> dict:
         raise AuthError(f"{err}{detail}") from e
 
 
+def _read_manual_api_key(input_stream=None) -> str:
+    stream = input_stream or sys.stdin
+    if hasattr(stream, "isatty") and stream.isatty():
+        key = getpass.getpass("Browser Use API key: ")
+    else:
+        key = stream.read()
+    key = (key or "").strip()
+    if not key:
+        raise AuthError("no API key provided on stdin")
+    if len(key) < 20:
+        raise AuthError("API key looks too short")
+    return key
+
+
 def _write_private_json(path: Path, data: dict) -> None:
     raw = (json.dumps(data, indent=2) + "\n").encode()
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
@@ -493,7 +519,9 @@ def run_auth_cli(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="browser-harness auth")
     sub = parser.add_subparsers(dest="command", required=True)
     login = sub.add_parser("login")
-    login.add_argument("--device-code", action="store_true")
+    login_mode = login.add_mutually_exclusive_group()
+    login_mode.add_argument("--device-code", action="store_true")
+    login_mode.add_argument("--api-key-stdin", action="store_true")
     login.add_argument("--json", action="store_true")
     login.add_argument("--no-open", action="store_true")
     sub.add_parser("status")
@@ -502,7 +530,9 @@ def run_auth_cli(argv: list[str]) -> int:
 
     try:
         if args.command == "login":
-            if args.device_code:
+            if args.api_key_stdin:
+                api_key_stdin_login(json_output=args.json)
+            elif args.device_code:
                 device_login(open_url=not args.no_open, json_output=args.json)
             else:
                 browser_login(open_url=not args.no_open, json_output=args.json)

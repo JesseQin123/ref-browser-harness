@@ -2,6 +2,7 @@ import json
 import stat
 import threading
 import urllib.request
+from io import StringIO
 
 from browser_harness import auth
 
@@ -47,6 +48,35 @@ def test_missing_key_raises_cloud_auth_required(monkeypatch, tmp_path):
         assert "browser-harness auth login" in str(e)
     else:
         raise AssertionError("expected CloudAuthRequired")
+
+
+def test_api_key_stdin_login_stores_manual_key_without_printing(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+    monkeypatch.setenv("BH_AUTH_PATH", str(tmp_path / "auth.json"))
+    manual_key = "manual-key-1234567890abcdef"
+
+    record = auth.api_key_stdin_login(input_stream=StringIO(manual_key + "\n"))
+    out = capsys.readouterr().out
+
+    assert record.source == "manual"
+    assert auth.get_browser_use_api_key() == manual_key
+    assert manual_key not in out
+    assert "stored" in out.lower()
+    assert json.loads((tmp_path / "auth.json").read_text())["browser_use"]["source"] == "manual"
+
+
+def test_api_key_stdin_login_rejects_missing_or_short_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("BH_AUTH_PATH", str(tmp_path / "auth.json"))
+
+    for raw in ["", "too-short"]:
+        try:
+            auth.api_key_stdin_login(input_stream=StringIO(raw))
+        except auth.AuthError as e:
+            assert "API key" in str(e) or "api key" in str(e)
+        else:
+            raise AssertionError("expected AuthError")
+
+    assert not (tmp_path / "auth.json").exists()
 
 
 def test_browser_login_callback_exchanges_and_stores_key(monkeypatch, tmp_path):

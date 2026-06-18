@@ -28,7 +28,7 @@ browser_close(browser_id=None)
 
 After `browser_new(...)` or `browser_switch(...)`, normal browser-harness helpers such as `new_tab`, `page_info`, `capture_screenshot`, `click_at_xy`, `js`, and `cdp` work unchanged.
 
-For cloud browsers, missing auth should produce `cloud-auth-required`; the model should run `browser-harness auth login` and retry. The user logs in online and the API key is stored locally without being printed into chat.
+For cloud browsers, missing auth should produce `cloud-auth-required`; the model should run `browser-harness auth login` and retry. The user logs in online and the API key is stored locally without being printed into chat. If a user directly provides an API key, the safe storage path is `browser-harness auth login --api-key-stdin`, never a command-line argument.
 
 The model does not need to know about sockets, daemon names, runtime dirs, CDP URLs, Browser Use browser IDs, or process cleanup. Those are manager internals.
 

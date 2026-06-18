@@ -74,6 +74,14 @@ It prints/opens a Browser Use login URL and waits while the user logs in online.
 browser-harness auth login --device-code
 ```
 
+If the user directly provides an API key, store it through stdin instead of a command argument:
+
+```bash
+browser-harness auth login --api-key-stdin
+```
+
+Never put API keys in command-line arguments.
+
 Then retry `browser_new(backend="cloud")`.
 
 ### Legacy remote browsers
