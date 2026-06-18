@@ -219,6 +219,79 @@ def test_wait_for_element_non_visible_uses_simple_check():
     assert any("querySelector" in e and "offsetParent" not in e for e in js_exprs)
 
 
+# --- tabs / profile contexts ---
+
+def test_list_tabs_filters_to_current_browser_context():
+    def fake_send(req):
+        if req.get("meta") == "current_tab":
+            return {
+                "targetId": "selected-target",
+                "url": "https://selected.example",
+                "title": "Selected",
+                "browserContextId": "ctx-selected",
+            }
+        return {}
+
+    def fake_cdp(method, **kwargs):
+        assert method == "Target.getTargets"
+        return {"targetInfos": [
+            {
+                "targetId": "selected-target",
+                "type": "page",
+                "title": "Selected",
+                "url": "https://selected.example",
+                "browserContextId": "ctx-selected",
+            },
+            {
+                "targetId": "other-target",
+                "type": "page",
+                "title": "Other",
+                "url": "https://other.example",
+                "browserContextId": "ctx-other",
+            },
+        ]}
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        tabs = helpers.list_tabs()
+        all_tabs = helpers.list_tabs(include_other_contexts=True)
+
+    assert [tab["targetId"] for tab in tabs] == ["selected-target"]
+    assert {tab["targetId"] for tab in all_tabs} == {"selected-target", "other-target"}
+
+
+def test_new_tab_preserves_current_browser_context():
+    calls = []
+
+    def fake_send(req):
+        if req.get("meta") == "current_tab":
+            return {
+                "targetId": "current-target",
+                "url": "about:blank",
+                "title": "",
+                "browserContextId": "ctx-selected",
+            }
+        if req.get("meta") == "set_session":
+            return {"session_id": req["session_id"]}
+        return {}
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.createTarget":
+            return {"targetId": "new-target"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        target_id = helpers.new_tab()
+
+    assert target_id == "new-target"
+    create_call = next(kwargs for method, kwargs in calls if method == "Target.createTarget")
+    assert create_call["browserContextId"] == "ctx-selected"
+
+
 # --- wait_for_network_idle ---
 
 def test_wait_for_network_idle_returns_true_when_no_events():

@@ -106,6 +106,8 @@ Browser-harness can connect to any Chrome or Chromium-based browser on your comp
 
 **Local browsers** require remote debugging to be enabled. There are two ways, and they suit different use cases.
 
+Local Way 1 also requires an explicit selected profile before the harness attaches. Run `list_local_profiles()` to get stable ids such as `google-chrome:Default`, then `use_local_profile("google-chrome:Default")`. The daemon snapshots that selected profile at startup and refuses to attach to an arbitrary available Chrome profile.
+
 *Way 1: chrome://inspect/#remote-debugging checkbox — uses your real profile.* In your running Chrome, navigate to `chrome://inspect/#remote-debugging` and tick the "Allow remote debugging for this browser instance" checkbox. This setting is per-profile and sticky: tick it once and it persists across every future Chrome launch of that profile. Then run any `browser-harness` command. On Chrome 144 and later, the first attach by the harness triggers an in-browser "Allow remote debugging?" popup that you must click Allow on. The popup may reappear on later attaches under conditions that are not fully characterized.[^1] This path inherits your everyday Chrome's logins, extensions, history, and bookmarks, which makes it the right choice for an agent helping you with tasks in your real browser.
 
 *Way 2: command-line flag — uses an isolated profile, no popups ever.* Launch Chrome with `--remote-debugging-port=9222 --user-data-dir=<path>`. Two precisions:
@@ -133,7 +135,7 @@ If the user hasn't said which connection method to use, default to Way 1 if Chro
    PY
    ```
 
-   If it prints page info, you're done.
+   If it prints page info, you're done. If it reports `needs-profile`, run `list_local_profiles()`, choose a stable profile id with the user, call `use_local_profile(profile_id)`, then retry.
 
 2. Otherwise run `browser-harness --doctor`. The two lines that matter for connection are `chrome running` and `daemon alive`.
 

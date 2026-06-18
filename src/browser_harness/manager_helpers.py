@@ -19,8 +19,8 @@ def browser_new(backend="managed", *, profile="clean", proxy_country=None, reaso
         reason=reason,
     )
     binding = manager_client.binding_from_response(resp)
-    context.activate_binding(binding)
     manager_client.acquire_execution_for_binding(binding)
+    context.activate_binding(binding)
     return manager_client.public_state(resp)
 
 
@@ -28,8 +28,8 @@ def browser_switch(browser_id):
     """Switch this agent/process to an existing allowed browser id."""
     resp = manager_client.switch_browser(browser_id)
     binding = manager_client.binding_from_response(resp)
-    context.activate_binding(binding)
     manager_client.acquire_execution_for_binding(binding)
+    context.activate_binding(binding)
     return manager_client.public_state(resp)
 
 
@@ -48,4 +48,3 @@ def browser_close(browser_id=None):
     if closing_active:
         context.clear_active_binding()
     return manager_client.public_state(resp)
-

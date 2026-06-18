@@ -38,6 +38,7 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+PROFILE_MARKER = "browser-use-profile-target"
 
 
 def _send(req):
@@ -258,8 +259,9 @@ def press_key(key, modifiers=0):
     so listeners checking e.keyCode / e.key all fire."""
     vk, code, text = _KEYS.get(key, (ord(key[0]) if len(key) == 1 else 0, key, key if len(key) == 1 else ""))
     base = {"key": key, "code": code, "modifiers": modifiers, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
-    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": text} if text else {}))
-    if text and len(text) == 1:
+    printable_char = len(key) == 1 and bool(text)
+    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({} if printable_char or not text else {"text": text}))
+    if printable_char:
         cdp("Input.dispatchKeyEvent", type="char", text=text, **{k: v for k, v in base.items() if k != "text"})
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
 
@@ -289,18 +291,51 @@ def capture_screenshot(path=None, full=False, max_dim=None):
 
 
 # --- tabs ---
-def list_tabs(include_chrome=True):
+def _is_agent_startup_placeholder(title, url):
+    url = str(url or "")
+    return str(title or "").startswith("Starting agent ") and (
+        url in ("", "about:blank") or url.startswith("about:blank#")
+    )
+
+
+def _current_target_browser_context_id():
+    try:
+        return current_tab().get("browserContextId")
+    except Exception:
+        return None
+
+
+def list_tabs(include_chrome=True, include_other_contexts=False):
     out = []
+    current_context = None if include_other_contexts else _current_target_browser_context_id()
     for t in cdp("Target.getTargets")["targetInfos"]:
         if t["type"] != "page": continue
+        if current_context and t.get("browserContextId") != current_context: continue
         url = t.get("url", "")
+        if _is_agent_startup_placeholder(t.get("title", ""), url): continue
+        if not include_chrome and PROFILE_MARKER in url: continue
         if not include_chrome and url.startswith(INTERNAL): continue
-        out.append({"targetId": t["targetId"], "title": t.get("title", ""), "url": url})
+        out.append({
+            "targetId": t["targetId"],
+            "target_id": t["targetId"],
+            "title": t.get("title", ""),
+            "url": url,
+            "browserContextId": t.get("browserContextId"),
+            "browser_context_id": t.get("browserContextId"),
+        })
     return out
 
 def current_tab():
     r = _send({"meta": "current_tab"})
-    return {"targetId": r["targetId"], "url": r["url"], "title": r["title"]}
+    return {
+        "targetId": r["targetId"],
+        "target_id": r["targetId"],
+        "url": r["url"],
+        "title": r["title"],
+        "browserContextId": r.get("browserContextId"),
+        "browser_context_id": r.get("browserContextId"),
+        "local_profile_id": r.get("local_profile_id"),
+    }
 
 def _mark_tab():
     """Prepend horse emoji to tab title so the user can see which tab the agent controls."""
@@ -310,7 +345,7 @@ def _mark_tab():
 def switch_tab(target):
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
-    target_id = target.get("targetId") if isinstance(target, dict) else target
+    target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
     # Unmark old tab. Horse emoji is a surrogate pair in JS UTF-16 strings (2 code units),
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
@@ -325,7 +360,21 @@ def new_tab(url="about:blank"):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    binding = context.get_active_binding()
+    if url != "about:blank" and binding and binding.manager_mode:
+        try:
+            cur = current_tab()
+            cur_url = cur.get("url") or ""
+            if cur_url in ("", "about:blank") or cur_url.startswith("about:blank#"):
+                goto_url(url)
+                return cur["targetId"]
+        except Exception:
+            pass
+    params = {"url": "about:blank"}
+    browser_context_id = _current_target_browser_context_id()
+    if browser_context_id:
+        params["browserContextId"] = browser_context_id
+    tid = cdp("Target.createTarget", **params)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
@@ -334,7 +383,7 @@ def new_tab(url="about:blank"):
 def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.
     Accepts a raw targetId string or a dict from list_tabs()/current_tab()."""
-    target_id = target.get("targetId") if isinstance(target, dict) else target
+    target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
     if target_id is None:
         target_id = current_tab()["targetId"]
     cdp("Target.closeTarget", targetId=target_id)

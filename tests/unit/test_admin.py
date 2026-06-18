@@ -30,16 +30,42 @@ def test_local_chrome_mode_is_false_when_process_env_provides_remote_cdp(monkeyp
     assert not admin._is_local_chrome_mode()
 
 
-def test_handshake_timeout_needs_chrome_remote_debugging_prompt():
+def test_local_chrome_mode_is_false_when_env_provides_explicit_cdp_url():
+    assert not admin._is_local_chrome_mode({"BU_CDP_URL": "http://127.0.0.1:9333"})
+
+
+def test_list_local_profiles_uses_native_detector(monkeypatch):
+    monkeypatch.setattr(
+        admin.local_profiles,
+        "list_local_profiles_payload",
+        lambda: {"status": "ok", "profiles": [{"id": "google-chrome:Default"}]},
+    )
+
+    assert admin.list_local_profiles() == {
+        "status": "ok",
+        "profiles": [{"id": "google-chrome:Default"}],
+    }
+
+
+def test_handshake_timeout_is_chrome_permission_popup():
     msg = "CDP WS handshake failed: timed out during opening handshake"
 
-    assert admin._needs_chrome_remote_debugging_prompt(msg)
+    assert not admin._needs_chrome_remote_debugging_prompt(msg)
+    assert admin._needs_chrome_permission_popup(msg)
 
 
-def test_handshake_403_needs_chrome_remote_debugging_prompt():
+def test_handshake_403_is_chrome_permission_popup():
     msg = "CDP WS handshake failed: server rejected WebSocket connection: HTTP 403"
 
+    assert not admin._needs_chrome_remote_debugging_prompt(msg)
+    assert admin._needs_chrome_permission_popup(msg)
+
+
+def test_cdp_disabled_needs_chrome_remote_debugging_prompt_not_permission_popup():
+    msg = "cdp-disabled: Chrome remote debugging is turned off for the selected profile"
+
     assert admin._needs_chrome_remote_debugging_prompt(msg)
+    assert not admin._needs_chrome_permission_popup(msg)
 
 
 def test_stale_websocket_does_not_open_chrome_inspect():

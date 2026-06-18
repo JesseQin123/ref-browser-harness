@@ -24,6 +24,8 @@ PY
 - Invoke as browser-harness — it's on $PATH. No cd, no uv run.
 - Use the heredoc form for every multi-line command. It prevents shell quote mangling inside Python strings and JavaScript snippets.
 - First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
+- Local Chrome requires an explicit selected profile. Use `list_local_profiles()` to see stable ids like `google-chrome:Default`, then `use_local_profile(profile_id)`.
+- Plain helper calls use the selected local browser. If you need an isolated or remote browser, call `browser_new(...)` before `new_tab(...)`.
 
 ## Tool call shape
 
@@ -34,6 +36,8 @@ PY
 ```
 
 Legacy mode calls ensure_daemon() before exec. Manager mode starts when the script uses a `browser_*` lifecycle helper or `BH_MANAGER_MODE=1`.
+
+Local Chrome sessions snapshot the selected profile when the daemon starts. If a profile is changed later, existing named daemons keep their current profile until restarted.
 
 ### Managed browsers
 
@@ -51,7 +55,7 @@ PY
 
 Lifecycle helpers:
 - `browser_status()` — current binding state.
-- `browser_new(backend="cloud"|"managed", profile="clean", proxy_country=None, reason=None)` — create and switch to a browser.
+- `browser_new(backend="cloud"|"managed", profile="clean", proxy_country=None, reason=None)` — create and switch to a browser. Cloud responses include `live_url` when Browser Use returns one.
 - `browser_list()` — browser ids visible to this run/agent.
 - `browser_switch(browser_id)` — reuse an existing browser id.
 - `browser_close(browser_id=None)` — close the active private browser, or release access to a shared one.
@@ -132,7 +136,7 @@ If you start struggling with a specific mechanic while navigating, look in inter
 ## Design constraints
 
 - Coordinate clicks default. Input.dispatchMouseEvent goes through iframes/shadow/cross-origin at the compositor level.
-- Legacy mode connects to the user's running Chrome. Manager mode may create cloud or managed browsers via `browser_new`.
+- Legacy mode connects to the user's selected local Chrome profile. Manager mode may create cloud or managed browsers via `browser_new`.
 - cdp-use is only for CDPClient.send_raw. Prefer raw CDP strings over typed wrappers.
 - run.py stays tiny. No argparse, subcommands, or extra control layer.
 - Core helpers stay short. Put task-specific helper additions in `agent-workspace/agent_helpers.py`; daemon/bootstrap and remote session admin live in the core package.

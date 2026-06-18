@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import _ipc as ipc
 from . import context
+from . import local_profiles
 
 
 def _process_start_time(pid):
@@ -164,6 +165,51 @@ def _log_tail(name, tmp_dir=None):
         return None
 
 
+class _DaemonStartLock:
+    def __init__(self, name, runtime_dir=None):
+        base = Path(runtime_dir) if runtime_dir else Path(tempfile.gettempdir())
+        self.path = base / f"bu-{name or NAME}.start.lock"
+        self.file = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = self.path.open("a+")
+        if sys.platform == "win32":
+            try:
+                import msvcrt
+                self.file.seek(0)
+                self.file.write("\0")
+                self.file.flush()
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_LOCK, 1)
+            except Exception:
+                pass
+        else:
+            try:
+                import fcntl
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass
+        return self
+
+    def __exit__(self, *_exc):
+        if not self.file:
+            return
+        if sys.platform == "win32":
+            try:
+                import msvcrt
+                self.file.seek(0)
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
+            except Exception:
+                pass
+        else:
+            try:
+                import fcntl
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+        self.file.close()
+
+
 def _needs_chrome_remote_debugging_prompt(msg):
     """True when Chrome needs the inspect-page permission/profile flow."""
     lower = (msg or "").lower()
@@ -171,6 +217,15 @@ def _needs_chrome_remote_debugging_prompt(msg):
         "devtoolsactiveport not found" in lower
         or "enable chrome://inspect" in lower
         or "not live yet" in lower
+        or "cdp-disabled" in lower
+    )
+
+
+def _needs_chrome_permission_popup(msg):
+    """True when Chrome is reachable but waiting on the per-session Allow popup."""
+    lower = (msg or "").lower()
+    return (
+        "permission-blocked" in lower
         or (
             "ws handshake failed" in lower
             and (
@@ -185,7 +240,13 @@ def _needs_chrome_remote_debugging_prompt(msg):
 
 def _is_local_chrome_mode(env=None):
     """True when the daemon discovers a local Chrome instead of a remote CDP WS."""
-    return not (env or {}).get("BU_CDP_WS") and not os.environ.get("BU_CDP_WS")
+    env = env or {}
+    return not (
+        env.get("BU_CDP_WS")
+        or env.get("BU_CDP_URL")
+        or os.environ.get("BU_CDP_WS")
+        or os.environ.get("BU_CDP_URL")
+    )
 
 
 def daemon_alive(name=None, binding=None):
@@ -343,24 +404,48 @@ def ensure_daemon(wait=60.0, name=None, env=None, binding=None):
 
     import subprocess, sys
     local = _is_local_chrome_mode(env)
-    for attempt in (0, 1):
-        e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
-        p = subprocess.Popen(
-            [sys.executable, "-m", "browser_harness.daemon"],
-            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
-        )
-        deadline = time.time() + wait
-        while time.time() < deadline:
-            if daemon_alive(name, binding=binding): return
-            if p.poll() is not None: break
-            time.sleep(0.2)
-        msg = _log_tail(name, tmp_dir=tmp_dir) or ""
-        if local and attempt == 0 and _needs_chrome_remote_debugging_prompt(msg):
-            _open_chrome_inspect()
-            print('browser-harness: at chrome://inspect/#remote-debugging, tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
-            restart_daemon(name, binding=binding)
-            continue
-        raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME, tmp_dir=tmp_dir)}")
+    if local and not env.get("BH_SELECTED_LOCAL_PROFILE"):
+        selected = local_profiles.get_default_profile_id()
+        if selected:
+            env["BH_SELECTED_LOCAL_PROFILE"] = selected
+    with _DaemonStartLock(name or NAME, runtime_dir=runtime_dir):
+        if daemon_alive(name, binding=binding):
+            return
+        for attempt in (0, 1):
+            e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+            log_file = open(ipc.log_path(name or NAME, tmp_dir=tmp_dir), "ab")
+            try:
+                p = subprocess.Popen(
+                    [sys.executable, "-m", "browser_harness.daemon"],
+                    env=e, stdout=log_file, stderr=log_file, **ipc.spawn_kwargs(),
+                )
+            finally:
+                log_file.close()
+            deadline = time.time() + wait
+            while time.time() < deadline:
+                if daemon_alive(name, binding=binding): return
+                if p.poll() is not None: break
+                time.sleep(0.2)
+            msg = _log_tail(name, tmp_dir=tmp_dir) or ""
+            if local and attempt == 0 and _needs_chrome_permission_popup(msg):
+                _open_selected_profile(env.get("BH_SELECTED_LOCAL_PROFILE"))
+                print('browser-harness: Chrome is asking "Allow remote debugging?" in the selected profile. Click Allow, then retry browser work.', file=sys.stderr)
+                restart_daemon(name, binding=binding)
+                raise RuntimeError(
+                    "permission-blocked: opened/focused the selected Chrome profile. "
+                    "Wait for the user to click Allow in the Chrome permission popup before retrying."
+                )
+            if local and attempt == 0 and _needs_chrome_remote_debugging_prompt(msg):
+                _open_chrome_inspect(env.get("BH_SELECTED_LOCAL_PROFILE"))
+                print('browser-harness: at chrome://inspect/#remote-debugging, tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
+                restart_daemon(name, binding=binding)
+                if "cdp-disabled" in msg.lower():
+                    raise RuntimeError(
+                        "cdp-disabled: opened chrome://inspect/#remote-debugging in the selected profile. "
+                        "Wait for the user to tick the checkbox and confirm before retrying."
+                    )
+                continue
+            raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME, tmp_dir=tmp_dir)}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -581,13 +666,18 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
 
 
 def list_local_profiles():
-    """Detected local browser profiles on this machine. Shells out to `profile-use list --json`.
-    Returns [{BrowserName, BrowserPath, ProfileName, ProfilePath, DisplayName}, ...].
-    Requires `profile-use` (see interaction-skills/profile-sync.md for install)."""
-    import json, shutil, subprocess
-    if not shutil.which("profile-use"):
-        raise RuntimeError("profile-use not installed -- curl -fsSL https://browser-use.com/profile.sh | sh")
-    return json.loads(subprocess.check_output(["profile-use", "list", "--json"], text=True))
+    """Detected local Chromium-family profiles with stable profile ids."""
+    return local_profiles.list_local_profiles_payload()
+
+
+def use_local_profile(profile_id):
+    """Set the default local profile id for future local Chrome daemon sessions."""
+    return local_profiles.set_default_profile_id(profile_id)
+
+
+def open_local_profile(profile_id=None, marker=True):
+    """Open or focus a local profile. With marker=True, running Chrome gets a marker tab."""
+    return local_profiles.open_local_profile(profile_id, allow_marker=marker)
 
 
 def sync_local_profile(profile_name, browser=None, cloud_profile_id=None,
@@ -749,10 +839,17 @@ def _chrome_running():
         return False
 
 
-def _open_chrome_inspect():
+def _open_chrome_inspect(profile_id=None):
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
     import platform, subprocess, webbrowser
     url = "chrome://inspect/#remote-debugging"
+    profile_id = profile_id or local_profiles.get_default_profile_id()
+    if profile_id:
+        try:
+            local_profiles.open_local_profile(profile_id, allow_marker=False, url=url)
+            return
+        except Exception:
+            pass
     if platform.system() == "Darwin":
         try:
             subprocess.run([
@@ -767,6 +864,23 @@ def _open_chrome_inspect():
         webbrowser.open(url, new=2)
     except Exception:
         pass
+
+
+def _open_selected_profile(profile_id=None):
+    """Focus the selected Chrome profile without routing through the checkbox page."""
+    import platform, subprocess
+    profile_id = profile_id or local_profiles.get_default_profile_id()
+    if profile_id:
+        try:
+            local_profiles.open_local_profile(profile_id, allow_marker=False)
+            return
+        except Exception:
+            pass
+    if platform.system() == "Darwin":
+        try:
+            subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to activate'], timeout=5, check=False)
+        except Exception:
+            pass
 
 
 def run_doctor():

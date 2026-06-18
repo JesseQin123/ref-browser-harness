@@ -20,6 +20,13 @@ from . import admin, auth, context
 
 
 BU_API = "https://api.browser-use.com/api/v3"
+MAC_BROWSER_PATHS = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+)
 
 
 @dataclass
@@ -142,6 +149,7 @@ class Manager:
                     "owned_by_this_agent": lease.owner_agent_id == agent_id,
                     "shared": len(lease.allowed_agents) > 1,
                     "state": "busy" if lease.active_execution else "ready",
+                    **({"live_url": lease.cloud_live_url} if lease.cloud_live_url else {}),
                 })
             return {"ok": True, "browsers": browsers}
 
@@ -317,11 +325,12 @@ def start_managed_backend(lease: BrowserLease):
         "--no-default-browser-check",
         "--disable-background-networking",
         "--disable-dev-shm-usage",
-        "--disable-gpu",
         "about:blank",
     ]
-    if os.environ.get("BH_MANAGED_HEADLESS") == "1" or (not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")):
+    headless = os.environ.get("BH_MANAGED_HEADLESS") == "1" or (not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"))
+    if headless:
         args.insert(-1, "--headless=new")
+        args.insert(-1, "--disable-gpu")
     if os.environ.get("BH_CHROME_NO_SANDBOX") == "1":
         args.insert(-1, "--no-sandbox")
     proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -368,6 +377,19 @@ def cleanup_backend(lease: BrowserLease):
                 os.kill(lease.local_process_id, 15)
             except Exception:
                 pass
+        for _ in range(25):
+            try:
+                os.kill(lease.local_process_id, 0)
+            except OSError:
+                return
+            time.sleep(0.2)
+        try:
+            os.killpg(lease.local_process_id, 9)
+        except Exception:
+            try:
+                os.kill(lease.local_process_id, 9)
+            except Exception:
+                pass
 
 
 def _browser_use(path: str, method: str, body=None):
@@ -391,14 +413,35 @@ def stop_cloud_browser(browser_id: str | None):
         pass
 
 
+def _browser_binary_usable(path: str) -> bool:
+    try:
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            return False
+        return subprocess.run(
+            [path, "--version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).returncode == 0
+    except Exception:
+        return False
+
+
 def find_browser_binary() -> str | None:
     for key in ("BH_CHROME_PATH", "CHROME_PATH"):
         value = os.environ.get(key)
         if value:
             return value
+    candidates = []
     for name in ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser"):
         path = shutil.which(name)
         if path:
+            candidates.append(path)
+    if sys.platform == "darwin":
+        candidates.extend(MAC_BROWSER_PATHS)
+    for path in candidates:
+        if _browser_binary_usable(path):
             return path
     return None
 
@@ -428,7 +471,7 @@ def wait_devtools(port: int, timeout=20.0):
 
 
 def ready_public(lease: BrowserLease) -> dict:
-    return {
+    state = {
         "ok": True,
         "ready": True,
         "state": "ready",
@@ -436,6 +479,9 @@ def ready_public(lease: BrowserLease) -> dict:
         "backend": lease.backend,
         "shared": len(lease.allowed_agents) > 1,
     }
+    if lease.cloud_live_url:
+        state["live_url"] = lease.cloud_live_url
+    return state
 
 
 def ready_response(lease: BrowserLease) -> dict:

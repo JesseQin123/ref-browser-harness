@@ -14,6 +14,7 @@ from .admin import (
     ensure_daemon,
     list_cloud_profiles,
     list_local_profiles,
+    open_local_profile,
     print_update_banner,
     restart_daemon,
     run_doctor,
@@ -22,6 +23,7 @@ from .admin import (
     start_remote_daemon,
     stop_remote_daemon,
     sync_local_profile,
+    use_local_profile,
 )
 from . import auth, context, manager_client
 from .helpers import *
@@ -38,6 +40,7 @@ Typical usage:
   PY
 
 Helpers are pre-imported. The daemon auto-starts and connects to the running browser.
+For local Chrome, first choose a stable profile id with list_local_profiles() and use_local_profile(id).
 
 Commands:
   browser-harness --version        print the installed version
@@ -66,6 +69,30 @@ _MANAGER_HELPER_NAMES = (
     "browser_close",
 )
 
+_NO_DAEMON_HELPER_NAMES = {
+    "list_local_profiles",
+    "use_local_profile",
+    "open_local_profile",
+    "list_cloud_profiles",
+    "sync_local_profile",
+    "start_remote_daemon",
+    "stop_remote_daemon",
+    "restart_daemon",
+}
+
+_NO_DAEMON_WRAPPER_NAMES = {
+    "print",
+    "repr",
+    "str",
+    "bool",
+    "len",
+    "sorted",
+    "list",
+    "dict",
+    "tuple",
+    "set",
+}
+
 
 def _uses_manager_helpers(code: str) -> bool:
     try:
@@ -79,6 +106,33 @@ def _uses_manager_helpers(code: str) -> bool:
         if isinstance(func, ast.Name) and func.id in _MANAGER_HELPER_NAMES:
             return True
     return False
+
+
+def _can_run_without_daemon(code: str) -> bool:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    saw_no_daemon_helper = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            if func.id in _NO_DAEMON_HELPER_NAMES:
+                saw_no_daemon_helper = True
+                continue
+            if func.id in _NO_DAEMON_WRAPPER_NAMES:
+                continue
+            return False
+        if isinstance(func, ast.Attribute):
+            # Allow simple formatting around passive helper output, e.g.
+            # json.dumps(list_local_profiles()).
+            if func.attr in {"dumps", "loads"}:
+                continue
+            return False
+        return False
+    return saw_no_daemon_helper
 
 
 # Probe /json/version (not a bare TCP connect) so a non-Chrome process bound to
@@ -163,7 +217,8 @@ def main():
         and os.environ.get("BU_AUTOSPAWN")
     ):
         start_remote_daemon(NAME)
-    ensure_daemon()
+    if not _can_run_without_daemon(code):
+        ensure_daemon()
     exec(code, globals())
 
 

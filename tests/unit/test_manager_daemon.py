@@ -1,6 +1,6 @@
-from browser_harness.manager_daemon import Manager
 from browser_harness import manager_daemon
 from browser_harness import auth
+from browser_harness.manager_daemon import Manager
 
 
 class _FakeResponse:
@@ -91,6 +91,43 @@ def test_close_rejects_other_runs(tmp_path):
     assert lease.browser_id in manager.leases
 
 
+def test_cloud_live_url_is_exposed_in_ready_state(tmp_path):
+    manager, lease = _manager_with_lease(tmp_path)
+    lease.cloud_live_url = "https://live.example/session"
+
+    resp = manager.handle({
+        "op": "status",
+        "run_id": "run-1",
+        "agent_id": "agent-1",
+    })
+
+    assert resp["ok"] is True
+    assert resp["live_url"] == "https://live.example/session"
+
+
+def test_cloud_live_url_is_exposed_in_browser_list(tmp_path):
+    manager, lease = _manager_with_lease(tmp_path)
+    lease.cloud_live_url = "https://live.example/session"
+
+    resp = manager.handle({
+        "op": "list",
+        "run_id": "run-1",
+        "agent_id": "agent-1",
+    })
+
+    assert resp["ok"] is True
+    assert resp["browsers"] == [
+        {
+            "browser_id": lease.browser_id,
+            "backend": "cloud",
+            "owned_by_this_agent": True,
+            "shared": False,
+            "state": "ready",
+            "live_url": "https://live.example/session",
+        }
+    ]
+
+
 def test_cloud_new_reports_auth_required(monkeypatch, tmp_path):
     manager = Manager(tmp_path)
     monkeypatch.setattr(
@@ -124,3 +161,18 @@ def test_browser_use_api_uses_auth_resolution(monkeypatch):
 
     assert captured
     assert captured[0].get_header("X-browser-use-api-key") == "stored-key"
+
+
+def test_find_browser_binary_skips_unusable_path_candidate_and_uses_mac_app(monkeypatch):
+    monkeypatch.delenv("BH_CHROME_PATH", raising=False)
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setattr(manager_daemon.sys, "platform", "darwin")
+    monkeypatch.setattr(manager_daemon.shutil, "which", lambda name: "/broken/chromium" if name == "chromium" else None)
+    monkeypatch.setattr(manager_daemon, "MAC_BROWSER_PATHS", ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",))
+    monkeypatch.setattr(
+        manager_daemon,
+        "_browser_binary_usable",
+        lambda path: path == "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    )
+
+    assert manager_daemon.find_browser_binary() == "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
