@@ -61,6 +61,24 @@ Chrome / Browser Use cloud -> CDP WS -> browser_harness.daemon -> IPC -> browser
 
 # Browser connection setup and troubleshooting
 
+## Get an API key (optional — only needed for cloud browsers)
+
+An API key is **optional**. browser-harness works for free by driving a local Chrome (see below) with no key. A `BROWSER_USE_API_KEY` (`bu_...`) is only needed for **Browser Use cloud browsers**, which we recommend: they run anywhere (no local Chrome, works headless/CI) and support cookie sync and proxies. Make this clear to the user — free with a local browser, key only for the recommended cloud browsers.
+
+To get a key, **default to signing the agent up automatically** (no human required, creates a free account):
+
+1. `POST https://api.browser-use.com/cloud/signup` → returns `{ "challenge_id", "challenge_text" }`.
+2. Solve the math problem in `challenge_text`; answer as a string with two decimal places (e.g. `"144.00"`).
+3. `POST https://api.browser-use.com/cloud/signup/verify` with `{ "challenge_id", "answer" }` → returns `{ "api_key": "bu_..." }`.
+4. `export BROWSER_USE_API_KEY=bu_...`.
+
+**After a successful signup, tell the user what you did and why** — you created a **free Browser Use cloud account** so the harness can run cloud browsers — and then handle ownership. **Surface this prominently: make the account creation and the claim recommendation the headline or the closing line of your message, not a mid-summary footnote, so the user can't miss that an account exists and how to own it.**
+
+- **If the user already has a Browser Use account:** don't keep the throwaway one. Either ask them to paste their own `BROWSER_USE_API_KEY`, or — with their permission — create one for them in their own logged-in browser via browser-harness (open <https://cloud.browser-use.com/settings?tab=api-keys&new=1>, create a key, read it back), then `export BROWSER_USE_API_KEY=bu_...`.
+- **If the user has no account and wants to keep this one:** recommend they claim it so they own it (and its billing/history). `POST https://api.browser-use.com/cloud/signup/claim` (header `X-Browser-Use-API-Key: bu_...`) returns a claim URL — open that URL in the user's running browser (via browser-harness) so they can finish claiming the account (set email/password). The key keeps working throughout.
+
+**If the agent challenge fails or errors**, fall back to asking the user to create a key in one click at <https://cloud.browser-use.com/settings?tab=api-keys&new=1> and `export BROWSER_USE_API_KEY=bu_...`. Full reference: <https://docs.browser-use.com/llms.txt>.
+
 ## Browser connection reference
 
 This section is the source of truth for how browser-harness connects to a browser. It is the canonical reference for every agent and user of this repo. Every statement here is intended to be verifiable against either an official Chrome source or this repo's own code, and is held to that standard deliberately. If anything below is incorrect, incomplete, or misleading, open an issue on the browser-harness repository immediately with clear evidence and explanation so it can be corrected. Do not silently work around an error in this document; the cost of one user being misled is much higher than the cost of one issue.
