@@ -5,11 +5,11 @@ This is a **one-time prerequisite**, not part of the regular AI workflow. Do it 
 ## Install the command
 
 ```bash
-uv tool install --upgrade --force browser-harness
+uv tool install --python 3.12 --upgrade --force browser-harness
 command -v browser-harness   # should print a path
 ```
 
-`--upgrade --force` replaces any previous `browser-harness` tool install with the latest stable release. It does not uninstall unrelated commands such as `browser-use-Browser` or `browser-use-Terminal`.
+`--python 3.12` prevents uv from selecting old releases that support older Python versions. `--upgrade --force` replaces any previous `browser-harness` tool install with the latest stable release. It does not uninstall unrelated commands such as `browser-use-Browser` or `browser-use-Terminal`.
 
 For browser-harness development, clone the repo into a durable path and run `uv tool install -e .` from the checkout.
 

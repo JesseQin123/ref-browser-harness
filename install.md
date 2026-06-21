@@ -10,7 +10,7 @@ Use once. For browser work, read `SKILL.md`.
 ## Fast Path
 
 ```bash
-uv tool install --upgrade --force browser-harness
+uv tool install --python 3.12 --upgrade --force browser-harness
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness"
 browser-harness skill > "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness/SKILL.md"
 browser-harness <<'PY'
@@ -20,7 +20,7 @@ PY
 
 If `page_info()` prints, stop. Setup is done.
 
-`--upgrade --force` replaces any previous `browser-harness` tool install with the latest stable release. It does not uninstall unrelated commands such as `browser-use-Browser` or `browser-use-Terminal`.
+`--python 3.12` prevents uv from selecting old releases that support older Python versions. `--upgrade --force` replaces any previous `browser-harness` tool install with the latest stable release. It does not uninstall unrelated commands such as `browser-use-Browser` or `browser-use-Terminal`.
 
 For Claude Code or other agents: install `browser-harness`, register a skill named `browser-harness`, use `browser-harness skill` as the body, and use this trigger:
 
