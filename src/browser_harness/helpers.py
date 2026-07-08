@@ -146,6 +146,132 @@ def page_info():
     expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
     return json.loads(_runtime_evaluate(expression))
 
+def _preprocess_markdown_content(content, max_newlines=3):
+    import re
+    content = re.sub(r'`\{["\w].*?\}`', "", content, flags=re.DOTALL)
+    content = re.sub(r'\{"\$type":[^}]{100,}\}', "", content)
+    content = re.sub(r'\{"[^"]{5,}":\{[^}]{100,}\}', "", content)
+    content = re.sub(r"\n{4,}", "\n" * max_newlines, content)
+    filtered_lines = []
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if len(stripped) > 100 and stripped[0] in "{[":
+            try:
+                json.loads(stripped)
+                continue
+            except ValueError:
+                pass
+        filtered_lines.append(line)
+    return "\n".join(filtered_lines).strip()
+
+
+def _convert_html_to_markdown(page_html):
+    import re
+    from markdownify import markdownify as md
+    page_html = re.sub(r"<(script|style|noscript)\b.*?</\1>", "", page_html, flags=re.DOTALL | re.IGNORECASE)
+    content = md(
+        page_html,
+        heading_style="ATX",
+        strip=["script", "style"],
+        bullets="-",
+        code_language="",
+        escape_asterisks=False,
+        escape_underscores=False,
+        escape_misc=False,
+        autolinks=False,
+        default_title=False,
+        keep_inline_images_in=[],
+    )
+    return _preprocess_markdown_content(content)
+
+
+def read_page(max_chars=4000):
+    html = js("document.documentElement ? document.documentElement.outerHTML : ''")
+    try:
+        content = _convert_html_to_markdown(html)
+    except ImportError:
+        content = js("document.body ? document.body.innerText : ''") or ""
+        import re
+        content = _preprocess_markdown_content(re.sub(r"\n{4,}", "\n\n\n", content))
+    return content[:int(max_chars)]
+
+
+_IS_INTERACTIVE_JS = r"""
+  const INTERACTIVE_TAGS = new Set(['button','input','select','textarea','a','details','summary','option','optgroup']);
+  const INTERACTIVE_ROLES = new Set(['button','link','menuitem','option','radio','checkbox','tab','textbox','combobox','slider','spinbutton','search','searchbox','row','cell','gridcell']);
+  const INTERACTIVE_ATTRS = ['onclick','onmousedown','onmouseup','onkeydown','onkeyup','tabindex'];
+  const SEARCH_INDICATORS = ['search','magnify','glass','lookup','find','query','search-icon','search-btn','search-button','searchbox'];
+  const hasFormControlDescendant = (el, depth) => {
+    if (depth <= 0) return false;
+    for (const c of el.children) {
+      const t = c.tagName.toLowerCase();
+      if (t === 'input' || t === 'select' || t === 'textarea') return true;
+      if (hasFormControlDescendant(c, depth - 1)) return true;
+    }
+    return false;
+  };
+  const isInteractive = (el) => {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'html' || tag === 'body') return false;
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    if (el.getAttribute('aria-hidden') === 'true') return false;
+    if (tag === 'label') {
+      if (el.getAttribute('for')) return false;
+      if (hasFormControlDescendant(el, 2)) return true;
+    }
+    if (tag === 'span' && hasFormControlDescendant(el, 2)) return true;
+    const cls = (el.getAttribute('class') || '').toLowerCase();
+    const id = (el.getAttribute('id') || '').toLowerCase();
+    if (SEARCH_INDICATORS.some(sI => cls.includes(sI) || id.includes(sI))) return true;
+    for (const a of el.attributes) {
+      if (a.name.startsWith('data-') && SEARCH_INDICATORS.some(sI => a.value.toLowerCase().includes(sI))) return true;
+    }
+    if (INTERACTIVE_TAGS.has(tag)) return true;
+    if (INTERACTIVE_ATTRS.some(a => el.hasAttribute(a))) return true;
+    const role = el.getAttribute('role');
+    if (role && INTERACTIVE_ROLES.has(role)) return true;
+    const r = el.getBoundingClientRect();
+    if (r.width >= 10 && r.width <= 50 && r.height >= 10 && r.height <= 50 &&
+        ['class','role','onclick','data-action','aria-label'].some(a => el.hasAttribute(a))) return true;
+    if (getComputedStyle(el).cursor === 'pointer') return true;
+    return false;
+  };
+"""
+
+
+def list_interactive(limit=60, viewport_only=True):
+    """Visible interactive elements with viewport coordinates for click_at_xy."""
+    expr = r"""(() => {
+%s
+  const out = [];
+  const seen = [];
+  for (const e of document.querySelectorAll('*')) {
+    const r = e.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    const off = r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth;
+    if (VIEWPORT_ONLY && off) continue;
+    if (!isInteractive(e)) continue;
+    const st = getComputedStyle(e);
+    if (st.visibility === 'hidden' || st.display === 'none' || +st.opacity === 0) continue;
+    if (seen.some(a => a.contains(e))) continue;  // ancestor already listed (paint-order style dedup)
+    const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + Math.min(r.height / 2, 40));
+    if (!off) {
+      const t = document.elementFromPoint(Math.min(Math.max(x, 0), innerWidth - 1), Math.min(Math.max(y, 0), innerHeight - 1));
+      if (!t || (t !== e && !e.contains(t) && !t.contains(e))) continue;
+    }
+    const text = (e.innerText || e.value || e.placeholder || (e.getAttribute && e.getAttribute('aria-label')) || e.alt || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    out.push({x, y, tag: e.tagName.toLowerCase() + (e.id ? '#' + e.id : ''), text});
+    seen.push(e);
+    if (out.length >= LIMIT) break;
+  }
+  return out;
+})()""" % _IS_INTERACTIVE_JS
+    expr = expr.replace("VIEWPORT_ONLY", "true" if viewport_only else "false").replace("LIMIT", str(int(limit)))
+    return js(expr)
+
+
 # --- input ---
 _debug_click_counter = 0
 
